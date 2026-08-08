@@ -159,12 +159,15 @@ func TestFindStaleResources(t *testing.T) {
 
 	makeObj := func(resourceID string) *unstructured.Unstructured {
 		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
+		obj.SetName(resourceID)
+		obj.SetNamespace("default")
 		obj.SetLabels(map[string]string{labels.LabelKeyRenderedReleaseResourceID: resourceID})
 		return obj
 	}
 
 	t.Run("empty live resources returns empty", func(t *testing.T) {
-		result := r.findStaleResources(nil, nil)
+		result := r.findStaleResources(nil, nil, nil)
 		if len(result) != 0 {
 			t.Errorf("expected 0, got %d", len(result))
 		}
@@ -173,7 +176,7 @@ func TestFindStaleResources(t *testing.T) {
 	t.Run("live resource not in desired is stale", func(t *testing.T) {
 		live := []*unstructured.Unstructured{makeObj("res-1")}
 		desired := []*unstructured.Unstructured{makeObj("res-2")}
-		stale := r.findStaleResources(live, desired)
+		stale := r.findStaleResources(live, desired, nil)
 		if len(stale) != 1 {
 			t.Fatalf("expected 1 stale, got %d", len(stale))
 		}
@@ -185,7 +188,7 @@ func TestFindStaleResources(t *testing.T) {
 	t.Run("live resource in desired is not stale", func(t *testing.T) {
 		live := []*unstructured.Unstructured{makeObj("res-1")}
 		desired := []*unstructured.Unstructured{makeObj("res-1")}
-		stale := r.findStaleResources(live, desired)
+		stale := r.findStaleResources(live, desired, nil)
 		if len(stale) != 0 {
 			t.Errorf("expected 0 stale, got %d", len(stale))
 		}
@@ -194,7 +197,7 @@ func TestFindStaleResources(t *testing.T) {
 	t.Run("live resource with no ID label is not stale", func(t *testing.T) {
 		noIDObj := &unstructured.Unstructured{}
 		noIDObj.SetLabels(map[string]string{"other": "label"})
-		stale := r.findStaleResources([]*unstructured.Unstructured{noIDObj}, nil)
+		stale := r.findStaleResources([]*unstructured.Unstructured{noIDObj}, nil, nil)
 		if len(stale) != 0 {
 			t.Errorf("expected 0 (no ID label skipped), got %d", len(stale))
 		}
@@ -203,12 +206,55 @@ func TestFindStaleResources(t *testing.T) {
 	t.Run("mixed: some stale, some current", func(t *testing.T) {
 		live := []*unstructured.Unstructured{makeObj("keep"), makeObj("remove")}
 		desired := []*unstructured.Unstructured{makeObj("keep")}
-		stale := r.findStaleResources(live, desired)
+		stale := r.findStaleResources(live, desired, nil)
 		if len(stale) != 1 {
 			t.Fatalf("expected 1 stale, got %d", len(stale))
 		}
 		if stale[0].GetLabels()[labels.LabelKeyRenderedReleaseResourceID] != "remove" {
 			t.Error("wrong stale resource")
+		}
+	})
+
+	t.Run("generated child sharing a desired resource ID is retained", func(t *testing.T) {
+		desired := makeObj("cluster")
+		child := makeObj("cluster")
+		child.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "StatefulSet"})
+		child.SetName("cluster-rack-a")
+		controller := true
+		child.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: "database.example.io/v1",
+			Kind:       "Cluster",
+			Name:       "cluster",
+			UID:        "cluster-uid",
+			Controller: &controller,
+		}})
+
+		stale := r.findStaleResources([]*unstructured.Unstructured{child}, []*unstructured.Unstructured{desired}, nil)
+		if len(stale) != 0 {
+			t.Fatalf("expected generated child to be retained, got %d stale resources", len(stale))
+		}
+	})
+
+	t.Run("previous immutable object is stale after same-ID replacement", func(t *testing.T) {
+		previous := makeObj("bootstrap")
+		previous.SetName("bootstrap-v1")
+		desired := makeObj("bootstrap")
+		desired.SetName("bootstrap-v2")
+		inventory := []openchoreov1alpha1.RenderedManifestStatus{{
+			ID:        "bootstrap",
+			Version:   "v1",
+			Kind:      "ConfigMap",
+			Namespace: "default",
+			Name:      "bootstrap-v1",
+		}}
+
+		stale := r.findStaleResources(
+			[]*unstructured.Unstructured{previous, desired},
+			[]*unstructured.Unstructured{desired},
+			inventory,
+		)
+		if len(stale) != 1 || stale[0].GetName() != "bootstrap-v1" {
+			t.Fatalf("expected only bootstrap-v1 to be stale, got %#v", stale)
 		}
 	})
 }
@@ -1428,6 +1474,50 @@ func TestBuildResourceStatus(t *testing.T) {
 		}
 		if rs.LastObservedTime == nil {
 			t.Error("expected non-nil LastObservedTime")
+		}
+	})
+
+	t.Run("operator child sharing a resource ID cannot replace the rendered root status", func(t *testing.T) {
+		desired := buildResourcesDesired("cluster", "cluster")
+		root := buildResourcesLive("cluster", "cluster", map[string]interface{}{"phase": "Ready"})
+		child := buildResourcesLive("cluster", "cluster-client", nil)
+		child.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "Service"})
+
+		result := r.buildResourceStatus(
+			ctx,
+			emptyRelease,
+			[]*unstructured.Unstructured{desired},
+			[]*unstructured.Unstructured{root, child},
+		)
+		if result[0].Status == nil {
+			t.Fatal("expected status from exact rendered root")
+		}
+		var status map[string]interface{}
+		if err := json.Unmarshal(result[0].Status.Raw, &status); err != nil {
+			t.Fatalf("unmarshal status: %v", err)
+		}
+		if status["phase"] != "Ready" {
+			t.Fatalf("expected root status, got %#v", status)
+		}
+	})
+
+	t.Run("old same-ID object cannot replace current immutable object status", func(t *testing.T) {
+		desired := buildResourcesDesired("bootstrap", "bootstrap-v2")
+		current := buildResourcesLive("bootstrap", "bootstrap-v2", map[string]interface{}{"succeeded": float64(1)})
+		old := buildResourcesLive("bootstrap", "bootstrap-v1", map[string]interface{}{"failed": float64(1)})
+
+		result := r.buildResourceStatus(
+			ctx,
+			emptyRelease,
+			[]*unstructured.Unstructured{desired},
+			[]*unstructured.Unstructured{current, old},
+		)
+		var status map[string]interface{}
+		if err := json.Unmarshal(result[0].Status.Raw, &status); err != nil {
+			t.Fatalf("unmarshal status: %v", err)
+		}
+		if status["succeeded"] != float64(1) {
+			t.Fatalf("expected current object status, got %#v", status)
 		}
 	})
 }

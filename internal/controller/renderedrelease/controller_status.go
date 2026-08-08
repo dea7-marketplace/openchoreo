@@ -56,12 +56,12 @@ func (r *Reconciler) updateStatus(ctx context.Context, old, release *openchoreov
 // buildResourceStatus converts applied unstructured objects to ResourceStatus entries using live resources
 func (r *Reconciler) buildResourceStatus(ctx context.Context, old *openchoreov1alpha1.RenderedRelease, desiredResources, liveResources []*unstructured.Unstructured) []openchoreov1alpha1.RenderedManifestStatus {
 	logger := log.FromContext(ctx)
-	// Build a map of live resources for quick lookup by resource ID
-	liveResourceMap := make(map[string]*unstructured.Unstructured)
+	// Match the exact rendered object. Resource IDs are deliberately copied into
+	// labels, so operators may propagate the same ID to generated children. IDs
+	// are also stable when an immutable object is replaced under a new name.
+	liveResourceMap := make(map[resourceIdentity]*unstructured.Unstructured)
 	for _, liveObj := range liveResources {
-		if resourceID := liveObj.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]; resourceID != "" {
-			liveResourceMap[resourceID] = liveObj
-		}
+		liveResourceMap[identityForObject(liveObj)] = liveObj
 	}
 
 	// Build a map of old resource statuses for quick lookup by resource ID
@@ -80,8 +80,8 @@ func (r *Reconciler) buildResourceStatus(ctx context.Context, old *openchoreov1a
 		var lastObservedTime *metav1.Time
 		healthStatus := openchoreov1alpha1.HealthStatusUnknown
 
-		// Look up the live resource by ID
-		if liveResource, found := liveResourceMap[resourceID]; found {
+		// Look up the live resource by its complete Kubernetes identity.
+		if liveResource, found := liveResourceMap[identityForObject(desiredObj)]; found {
 			// Extract status field if it exists
 			if statusField, found, _ := unstructured.NestedFieldCopy(liveResource.Object, "status"); found && statusField != nil {
 				// Convert status to RawExtension
