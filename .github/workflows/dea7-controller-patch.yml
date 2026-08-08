@@ -71,8 +71,12 @@ jobs:
             --method PATCH \
             /orgs/dea7-marketplace/packages/container/openchoreo-controller \
             -f visibility=public
+          anonymous_token="$(curl --fail --silent --show-error \
+            'https://ghcr.io/token?scope=repository:dea7-marketplace/openchoreo-controller:pull' \
+            | jq -er '.token')"
           curl --fail --silent --show-error \
             --header 'Accept: application/vnd.oci.image.index.v1+json' \
+            --header "Authorization: Bearer ${anonymous_token}" \
             "https://ghcr.io/v2/dea7-marketplace/openchoreo-controller/manifests/${CONTROLLER_DIGEST}" \
             >/dev/null
 
