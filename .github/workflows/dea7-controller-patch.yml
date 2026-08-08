@@ -24,7 +24,10 @@ jobs:
         uses: ./.github/actions/setup-go
 
       - name: Test rendered release controller
-        run: go test -race ./internal/controller/renderedrelease
+        run: |
+          make envtest
+          KUBEBUILDER_ASSETS="$(bin/tools/setup-envtest use 1.36.0 --bin-dir bin/tools -p path)" \
+            go test -race ./internal/controller/renderedrelease
 
       - name: Build controller
         run: make go.build-multiarch.manager GO_TARGET_PLATFORMS=linux/amd64
