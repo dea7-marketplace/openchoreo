@@ -26,7 +26,8 @@ jobs:
       - name: Test rendered release controller
         run: |
           make envtest
-          KUBEBUILDER_ASSETS="$(bin/tools/setup-envtest use 1.36.0 --bin-dir bin/tools -p path)" \
+          bin/tools/setup-envtest use 1.36.0 --bin-dir "${GITHUB_WORKSPACE}/bin/tools" -p path
+          KUBEBUILDER_ASSETS="${GITHUB_WORKSPACE}/bin/tools/k8s/1.36.0-linux-amd64" \
             go test -race ./internal/controller/renderedrelease
 
       - name: Build controller
