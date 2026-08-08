@@ -63,20 +63,10 @@ jobs:
           echo "CONTROLLER_DIGEST=${digest}" >> "${GITHUB_ENV}"
           echo "Published ${IMAGE%@*}@${digest}" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Publish controller package for unauthenticated cluster pulls
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify unauthenticated controller pull
         run: |
-          gh api \
-            --method PATCH \
-            /orgs/dea7-marketplace/packages/container/openchoreo-controller-patch \
-            -f visibility=public
-          anonymous_token="$(curl --fail --silent --show-error \
-            'https://ghcr.io/token?scope=repository:dea7-marketplace/openchoreo-controller-patch:pull' \
-            | jq -er '.token')"
           curl --fail --silent --show-error \
             --header 'Accept: application/vnd.oci.image.index.v1+json' \
-            --header "Authorization: Bearer ${anonymous_token}" \
             "https://ghcr.io/v2/dea7-marketplace/openchoreo-controller-patch/manifests/${CONTROLLER_DIGEST}" \
             >/dev/null
 
