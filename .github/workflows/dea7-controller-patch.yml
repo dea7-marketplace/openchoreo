@@ -45,7 +45,7 @@ jobs:
 
       - name: Build and publish controller image
         env:
-          IMAGE: ghcr.io/dea7-marketplace/openchoreo-controller:${{ github.sha }}
+          IMAGE: ghcr.io/dea7-marketplace/openchoreo-controller-patch:${{ github.sha }}
         run: |
           docker buildx build \
             --file Dockerfile \
@@ -69,15 +69,15 @@ jobs:
         run: |
           gh api \
             --method PATCH \
-            /orgs/dea7-marketplace/packages/container/openchoreo-controller \
+            /orgs/dea7-marketplace/packages/container/openchoreo-controller-patch \
             -f visibility=public
           anonymous_token="$(curl --fail --silent --show-error \
-            'https://ghcr.io/token?scope=repository:dea7-marketplace/openchoreo-controller:pull' \
+            'https://ghcr.io/token?scope=repository:dea7-marketplace/openchoreo-controller-patch:pull' \
             | jq -er '.token')"
           curl --fail --silent --show-error \
             --header 'Accept: application/vnd.oci.image.index.v1+json' \
             --header "Authorization: Bearer ${anonymous_token}" \
-            "https://ghcr.io/v2/dea7-marketplace/openchoreo-controller/manifests/${CONTROLLER_DIGEST}" \
+            "https://ghcr.io/v2/dea7-marketplace/openchoreo-controller-patch/manifests/${CONTROLLER_DIGEST}" \
             >/dev/null
 
       - name: Install Cosign
@@ -85,7 +85,7 @@ jobs:
 
       - name: Sign controller image
         env:
-          IMAGE: ghcr.io/dea7-marketplace/openchoreo-controller
+          IMAGE: ghcr.io/dea7-marketplace/openchoreo-controller-patch
         run: |
           cosign sign --yes \
             -a "repo=${{ github.repository }}" \
