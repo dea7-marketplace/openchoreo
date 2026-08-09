@@ -512,6 +512,11 @@ func TestGetHealthCheckFunc(t *testing.T) {
 			wantNonNil: true,
 		},
 		{
+			name:       "batch/Job",
+			gvk:        schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"},
+			wantNonNil: true,
+		},
+		{
 			name:       "batch/CronJob",
 			gvk:        schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "CronJob"},
 			wantNonNil: true,
@@ -982,8 +987,55 @@ func TestGetPodHealth(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// getCronJobHealth
+// getJobHealth
 // ─────────────────────────────────────────────────────────────
+
+func TestGetJobHealth(t *testing.T) {
+	makeJob := func(job batchv1.Job) *unstructured.Unstructured {
+		return toUnstructured(t, &job)
+	}
+
+	tests := []struct {
+		name string
+		job  batchv1.Job
+		want openchoreov1alpha1.HealthStatus
+	}{
+		{name: "suspended job is Suspended", job: batchv1.Job{Spec: batchv1.JobSpec{Suspend: boolPtr(true)}}, want: openchoreov1alpha1.HealthStatusSuspended},
+		{name: "new job is Progressing", job: batchv1.Job{}, want: openchoreov1alpha1.HealthStatusProgressing},
+		{name: "active job is Progressing", job: batchv1.Job{Status: batchv1.JobStatus{Active: 1}}, want: openchoreov1alpha1.HealthStatusProgressing},
+		{name: "succeeded count without terminal condition is Progressing", job: batchv1.Job{Status: batchv1.JobStatus{Succeeded: 1}}, want: openchoreov1alpha1.HealthStatusProgressing},
+		{
+			name: "complete job is Healthy",
+			job: batchv1.Job{Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{
+				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+			}}},
+			want: openchoreov1alpha1.HealthStatusHealthy,
+		},
+		{
+			name: "failed job is Degraded",
+			job: batchv1.Job{Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+			}}},
+			want: openchoreov1alpha1.HealthStatusDegraded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := getJobHealth(makeJob(tt.job))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected %s, got %s", tt.want, got)
+			}
+		})
+	}
+}
+
+// ──────────────────────────────────────────────────────────
+// getCronJobHealth
+// ───────────────────────────────────────────────────────────
 
 func TestGetCronJobHealth(t *testing.T) {
 	now := metav1.Now()
