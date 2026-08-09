@@ -5,12 +5,13 @@ package renderedrelease
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +47,8 @@ const (
 	ReasonApplySucceeded = "ApplySucceeded"
 	// ReasonApplyFailed indicates one or more resources failed to apply
 	ReasonApplyFailed = "ApplyFailed"
+
+	annotationRenderedJobSpecHash = "openchoreo.dev/rendered-job-spec-hash"
 )
 
 // Reconciler reconciles a RenderedRelease object
@@ -274,15 +277,26 @@ func (r *Reconciler) applyResources(ctx context.Context, planeClient client.Clie
 		// This also avoids Kubernetes defaulted pod-template fields turning a
 		// periodic server-side apply into an invalid immutable-field update.
 		if obj.GetAPIVersion() == "batch/v1" && obj.GetKind() == "Job" {
+			specHash, err := renderedJobSpecHash(obj)
+			if err != nil {
+				return fmt.Errorf("failed to hash immutable Job resource %s: %w", resourceID, err)
+			}
+			annotations := obj.GetAnnotations()
+			if annotations == nil {
+				annotations = make(map[string]string)
+			}
+			annotations[annotationRenderedJobSpecHash] = specHash
+			obj.SetAnnotations(annotations)
+
 			existing := &unstructured.Unstructured{}
 			existing.SetGroupVersionKind(obj.GroupVersionKind())
-			err := planeClient.Get(ctx, client.ObjectKeyFromObject(obj), existing)
+			err = planeClient.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 			switch {
 			case apierrors.IsNotFound(err):
 				// The normal apply below creates the immutable execution once.
 			case err != nil:
 				return fmt.Errorf("failed to inspect immutable Job resource %s: %w", resourceID, err)
-			case !equality.Semantic.DeepDerivative(obj.Object["spec"], existing.Object["spec"]):
+			case existing.GetAnnotations()[annotationRenderedJobSpecHash] != specHash:
 				return fmt.Errorf("immutable Job resource %s already exists with a different spec; render a new Job name", resourceID)
 			default:
 				continue
@@ -296,6 +310,19 @@ func (r *Reconciler) applyResources(ctx context.Context, planeClient client.Clie
 	}
 
 	return nil
+}
+
+func renderedJobSpecHash(obj *unstructured.Unstructured) (string, error) {
+	spec, found := obj.Object["spec"]
+	if !found {
+		return "", fmt.Errorf("spec is required")
+	}
+	canonical, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("marshal spec: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return fmt.Sprintf("sha256:%x", digest), nil
 }
 
 // makeDesiredResources creates the desired resources from the Release spec

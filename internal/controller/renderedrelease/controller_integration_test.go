@@ -1654,6 +1654,10 @@ var _ = Describe("applyResources and deleteResources", func() {
 			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{
 				makeTrackedJob(jobName, resourceID, releaseUID, "busybox:1.36"),
 			})).To(Succeed())
+			existing := &unstructured.Unstructured{}
+			existing.SetGroupVersionKind(jobGVK)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: jobName, Namespace: testNS}, existing)).To(Succeed())
+			Expect(existing.GetAnnotations()[annotationRenderedJobSpecHash]).To(MatchRegexp(`^sha256:[0-9a-f]{64}$`))
 		})
 
 		It("requires a new rendered name when the execution spec changes", func() {
