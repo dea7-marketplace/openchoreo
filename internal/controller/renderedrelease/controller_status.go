@@ -209,6 +209,8 @@ func GetHealthCheckFunc(gvk schema.GroupVersionKind) func(obj *unstructured.Unst
 		return getStatefulSetHealth
 	case gvk.Group == "" && gvk.Kind == "Pod":
 		return getPodHealth
+	case gvk.Group == "batch" && gvk.Kind == "Job":
+		return getJobHealth
 	case gvk.Group == "batch" && gvk.Kind == "CronJob":
 		return getCronJobHealth
 		// TODO: Add gateway http route health check, and other resources as needed
@@ -388,6 +390,33 @@ func getPodHealth(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStat
 	default:
 		return openchoreov1alpha1.HealthStatusUnknown, nil
 	}
+}
+
+func getJobHealth(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStatus, error) {
+	var job batchv1.Job
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &job); err != nil {
+		return openchoreov1alpha1.HealthStatusUnknown, fmt.Errorf("failed to convert to job: %w", err)
+	}
+
+	if job.Spec.Suspend != nil && *job.Spec.Suspend {
+		return openchoreov1alpha1.HealthStatusSuspended, nil
+	}
+
+	// Only the Job controller's terminal conditions prove success or failure.
+	// A present Job with pending or image-pull-blocked Pods is still progressing.
+	for _, condition := range job.Status.Conditions {
+		if condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch condition.Type {
+		case batchv1.JobFailed:
+			return openchoreov1alpha1.HealthStatusDegraded, nil
+		case batchv1.JobComplete:
+			return openchoreov1alpha1.HealthStatusHealthy, nil
+		}
+	}
+
+	return openchoreov1alpha1.HealthStatusProgressing, nil
 }
 
 func getCronJobHealth(obj *unstructured.Unstructured) (openchoreov1alpha1.HealthStatus, error) {
