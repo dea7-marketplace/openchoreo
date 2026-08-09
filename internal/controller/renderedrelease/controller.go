@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -267,6 +268,26 @@ func (r *Reconciler) getOPClient(ctx context.Context, namespaceName string, envi
 func (r *Reconciler) applyResources(ctx context.Context, planeClient client.Client, resources []*unstructured.Unstructured) error {
 	for _, obj := range resources {
 		resourceID := obj.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]
+
+		// Jobs are immutable execution records. Their rendered name must change when
+		// the desired execution changes, so never patch an existing Job in place.
+		// This also avoids Kubernetes defaulted pod-template fields turning a
+		// periodic server-side apply into an invalid immutable-field update.
+		if obj.GetAPIVersion() == "batch/v1" && obj.GetKind() == "Job" {
+			existing := &unstructured.Unstructured{}
+			existing.SetGroupVersionKind(obj.GroupVersionKind())
+			err := planeClient.Get(ctx, client.ObjectKeyFromObject(obj), existing)
+			switch {
+			case apierrors.IsNotFound(err):
+				// The normal apply below creates the immutable execution once.
+			case err != nil:
+				return fmt.Errorf("failed to inspect immutable Job resource %s: %w", resourceID, err)
+			case !equality.Semantic.DeepDerivative(obj.Object["spec"], existing.Object["spec"]):
+				return fmt.Errorf("immutable Job resource %s already exists with a different spec; render a new Job name", resourceID)
+			default:
+				continue
+			}
+		}
 
 		// Apply the resource using server-side apply
 		if err := planeClient.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner(ControllerName)); err != nil {

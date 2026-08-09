@@ -1536,12 +1536,46 @@ var _ = Describe("RenderedRelease Controller", func() {
 var _ = Describe("applyResources and deleteResources", func() {
 	const testNS = "default"
 	configMapGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+	jobGVK := schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}
 
 	makeTrackedCM := func(name, resourceID, releaseUID string) *unstructured.Unstructured {
 		obj := &unstructured.Unstructured{}
 		obj.SetGroupVersionKind(configMapGVK)
 		obj.SetName(name)
 		obj.SetNamespace(testNS)
+		obj.SetLabels(map[string]string{
+			labels.LabelKeyManagedBy:                 ControllerName,
+			labels.LabelKeyRenderedReleaseResourceID: resourceID,
+			labels.LabelKeyRenderedReleaseUID:        releaseUID,
+			labels.LabelKeyRenderedReleaseName:       "test-release",
+			labels.LabelKeyRenderedReleaseNamespace:  testNS,
+		})
+		return obj
+	}
+
+	makeTrackedJob := func(name, resourceID, releaseUID, image string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "batch/v1",
+			"kind":       "Job",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": testNS,
+			},
+			"spec": map[string]interface{}{
+				"template": map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"labels": map[string]interface{}{"test": name},
+					},
+					"spec": map[string]interface{}{
+						"restartPolicy": "Never",
+						"containers": []interface{}{map[string]interface{}{
+							"name": "job", "image": image,
+						}},
+					},
+				},
+			},
+		}}
+		obj.SetGroupVersionKind(jobGVK)
 		obj.SetLabels(map[string]string{
 			labels.LabelKeyManagedBy:                 ControllerName,
 			labels.LabelKeyRenderedReleaseResourceID: resourceID,
@@ -1596,6 +1630,41 @@ var _ = Describe("applyResources and deleteResources", func() {
 			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{obj})).To(Succeed())
 			obj2 := makeTrackedCM(cmName, resourceID, releaseUID)
 			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{obj2})).To(Succeed())
+		})
+	})
+
+	Context("when applying an immutable Job resource", func() {
+		const jobName = "test-immutable-job"
+		const resourceID = "job-res-1"
+		const releaseUID = "job-uid-1"
+
+		AfterEach(func() {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(jobGVK)
+			obj.SetName(jobName)
+			obj.SetNamespace(testNS)
+			_ = k8sClient.Delete(ctx, obj, client.PropagationPolicy(metav1.DeletePropagationBackground))
+		})
+
+		It("creates once and treats the defaulted live Job as idempotent", func() {
+			r := &Reconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{
+				makeTrackedJob(jobName, resourceID, releaseUID, "busybox:1.36"),
+			})).To(Succeed())
+			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{
+				makeTrackedJob(jobName, resourceID, releaseUID, "busybox:1.36"),
+			})).To(Succeed())
+		})
+
+		It("requires a new rendered name when the execution spec changes", func() {
+			r := &Reconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{
+				makeTrackedJob(jobName, resourceID, releaseUID, "busybox:1.36"),
+			})).To(Succeed())
+			err := r.applyResources(ctx, k8sClient, []*unstructured.Unstructured{
+				makeTrackedJob(jobName, resourceID, releaseUID, "busybox:1.37"),
+			})
+			Expect(err).To(MatchError(ContainSubstring("render a new Job name")))
 		})
 	})
 
